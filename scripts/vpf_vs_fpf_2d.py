@@ -13,7 +13,7 @@ import pandas as pd
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from turbofan_vpf.aero.incidence_control import compare_phase
+from turbofan_vpf.aero.incidence_control import alpha_fpf, compare_phase
 from turbofan_vpf.aero.polars import load_polar_csv
 from turbofan_vpf.domain.flight_phases import FlightPhase, get_default_phases
 from turbofan_vpf.utils.paths import (
@@ -75,8 +75,11 @@ def compute_phase_metrics(
 ) -> list[dict[str, float]]:
     """Compute metrics for each flight phase.
 
+    FPF uses a constant angle (optimized for cruise), while VPF finds the
+    optimal angle for each phase.
+
     Args:
-        polar: Tuple of (alpha_deg, cl, cd) arrays
+        polar: Tuple of (alpha_deg, cl, cd) arrays (base polar)
         phases: List of flight phases
         vpf_target: VPF optimization target
 
@@ -84,11 +87,21 @@ def compute_phase_metrics(
         List of dictionaries with phase comparison results
     """
     print("Computing metrics for each flight phase...")
+
+    # Find cruise phase to determine FPF fixed angle
+    cruise_phase = next((p for p in phases if p.name == "cruise"), phases[0])
+    print(f"  FPF fixed angle optimized for: {cruise_phase.name} (M={cruise_phase.mach:.2f})")
+
+    # Calculate FPF constant angle (optimized for cruise)
+    fpf_alpha_constant = alpha_fpf(polar, cruise_phase, target=vpf_target)
+    print(f"  FPF fixed angle of attack: {fpf_alpha_constant:.2f}° (constant across all phases)")
+    print()
+
     results = []
 
     for phase in phases:
         try:
-            comparison = compare_phase(polar, phase, vpf_target=vpf_target)
+            comparison = compare_phase(polar, phase, fpf_alpha_constant, vpf_target=vpf_target)
             results.append(
                 {
                     "phase": phase.name,

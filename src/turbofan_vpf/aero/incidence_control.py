@@ -13,37 +13,38 @@ from turbofan_vpf.aero.metrics import (
 from turbofan_vpf.domain.flight_phases import FlightPhase
 
 
-def alpha_fpf(phase: FlightPhase) -> float:
-    """Calculate angle of attack for Fixed Pitch Fan (FPF).
+def alpha_fpf(
+    polar: Tuple[np.ndarray, np.ndarray, np.ndarray],
+    cruise_phase: FlightPhase,
+    target: Literal["min_cd", "max_ld"] = "max_ld",
+) -> float:
+    """Calculate fixed angle of attack for Fixed Pitch Fan (FPF).
 
-    Simple linear law based on Mach number:
-        alpha_fpf = alpha_0 + k_mach * (mach - mach_ref)
+    FPF operates at a CONSTANT angle of attack, optimized for cruise conditions.
+    This angle is determined once using the cruise phase polar (with compressibility
+    correction) and then maintained across all flight phases.
 
-    Where:
-        - alpha_0 = 4.0°: Base angle at reference Mach
-        - mach_ref = 0.5: Reference Mach number
-        - k_mach = 2.0: Sensitivity to Mach number (deg/Mach)
-
-    This model assumes that FPF operates at a fixed geometric angle,
-    but the effective angle of attack varies with Mach number due to
-    flow conditions. Higher Mach numbers require slightly higher angles
-    to maintain similar performance.
+    The fixed angle is chosen to optimize performance at cruise (typically max L/D
+    or min CD), representing the design point where the fan is most efficient.
 
     Args:
-        phase: Flight phase with altitude and Mach number
+        polar: Tuple of (alpha_deg, cl, cd) arrays (base/incompressible polar)
+        cruise_phase: Cruise flight phase used to determine the fixed angle
+        target: Optimization target for cruise, either "min_cd" or "max_ld"
 
     Returns:
-        Angle of attack in degrees for FPF
+        Fixed angle of attack in degrees for FPF (constant across all phases)
     """
-    # Model parameters
-    alpha_0 = 4.0  # Base angle at reference Mach (degrees)
-    mach_ref = 0.5  # Reference Mach number
-    k_mach = 2.0  # Mach sensitivity (deg/Mach)
+    # Apply compressibility correction for cruise Mach number
+    polar_cruise = apply_compressibility_to_polar(polar, cruise_phase.mach, phase_name=cruise_phase.name)
 
-    # Linear law: alpha increases with Mach
-    alpha = alpha_0 + k_mach * (phase.mach - mach_ref)
-
-    return alpha
+    # Find optimal angle for cruise conditions
+    if target == "min_cd":
+        return find_alpha_min_cd(polar_cruise)
+    elif target == "max_ld":
+        return find_alpha_max_ld(polar_cruise)
+    else:
+        raise ValueError(f"Invalid target: {target}. Must be 'min_cd' or 'max_ld'")
 
 
 def alpha_vpf(
@@ -78,12 +79,16 @@ def alpha_vpf(
 def compare_phase(
     polar: Tuple[np.ndarray, np.ndarray, np.ndarray],
     phase: FlightPhase,
+    fpf_alpha: float,
     vpf_target: Literal["min_cd", "max_ld"] = "max_ld",
 ) -> Dict[str, float]:
     """Compare FPF and VPF performance for a given flight phase.
 
     Calculates aerodynamic metrics (CD, L/D) for both FPF and VPF configurations,
     and provides comparison metrics (deltas and ratios).
+
+    FPF uses a CONSTANT angle of attack (optimized for cruise), while VPF finds
+    the optimal angle for each phase using the compressibility-corrected polar.
 
     Applies compressibility corrections to the polar based on the phase Mach number
     before computing metrics. The correction is applied automatically according to
@@ -92,12 +97,13 @@ def compare_phase(
     Args:
         polar: Tuple of (alpha_deg, cl, cd) arrays (incompressible/base polar)
         phase: Flight phase with altitude and Mach number
+        fpf_alpha: Fixed angle of attack for FPF (constant, optimized for cruise)
         vpf_target: VPF optimization target, either "min_cd" or "max_ld"
 
     Returns:
         Dictionary with keys:
-        - 'fpf_alpha': FPF angle of attack (degrees)
-        - 'vpf_alpha': VPF angle of attack (degrees)
+        - 'fpf_alpha': FPF angle of attack (degrees, constant)
+        - 'vpf_alpha': VPF angle of attack (degrees, optimized for this phase)
         - 'fpf_cd': FPF drag coefficient (compressibility corrected)
         - 'vpf_cd': VPF drag coefficient (compressibility corrected)
         - 'fpf_ld': FPF lift-to-drag ratio (compressibility corrected)
@@ -115,8 +121,8 @@ def compare_phase(
     # Apply compressibility correction for this phase's Mach number
     polar_corrected = apply_compressibility_to_polar(polar, phase.mach, phase_name=phase.name)
 
-    # Calculate angles (using corrected polar for VPF optimization)
-    fpf_alpha = alpha_fpf(phase)
+    # FPF uses constant angle (optimized for cruise)
+    # VPF finds optimal angle for this specific phase
     vpf_alpha = alpha_vpf(polar_corrected, target=vpf_target)
 
     # Calculate metrics for both configurations (using corrected polar)

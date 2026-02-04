@@ -374,7 +374,7 @@ def plot_cd_comparison_bars(
     ax1.set_xlabel("Flight Phase", fontsize=FONT_SIZE_LABEL)
     ax1.set_title("Absolute Difference", fontsize=FONT_SIZE_SUBTITLE, fontweight="bold")
     ax1.grid(True, alpha=ALPHA_GRID, axis="y", linestyle="--", linewidth=0.5)
-    ax1.tick_params(axis="x", rotation=45, ha="right")
+    ax1.tick_params(axis="x", rotation=45)
     ax1.legend(loc="best", fontsize=FONT_SIZE_LEGEND - 1, framealpha=0.9)
 
     _add_bar_value_labels(ax1, bars1, fmt="{:.4f}", offset=0.0001 if delta_cd.min() >= 0 else -0.0003)
@@ -392,7 +392,7 @@ def plot_cd_comparison_bars(
     ax2.set_xlabel("Flight Phase", fontsize=FONT_SIZE_LABEL)
     ax2.set_title("Relative Ratio", fontsize=FONT_SIZE_SUBTITLE, fontweight="bold")
     ax2.grid(True, alpha=ALPHA_GRID, axis="y", linestyle="--", linewidth=0.5)
-    ax2.tick_params(axis="x", rotation=45, ha="right")
+    ax2.tick_params(axis="x", rotation=45)
     ax2.legend(loc="best", fontsize=FONT_SIZE_LEGEND - 1, framealpha=0.9)
 
     _add_bar_value_labels(ax2, bars2, fmt="{:.3f}", offset=0.02)
@@ -458,7 +458,9 @@ def plot_ld_comparison(
         pad=20,
     )
     ax.set_xticks(x)
-    ax.set_xticklabels(phase_labels, rotation=45, ha="right")
+    ax.set_xticklabels(phase_labels, rotation=45)
+    for label in ax.get_xticklabels():
+        label.set_ha("right")
     ax.legend(loc="upper left", fontsize=FONT_SIZE_LEGEND, framealpha=0.9, fancybox=True, shadow=True)
     ax.grid(True, alpha=ALPHA_GRID, axis="y", linestyle="--", linewidth=0.5)
 
