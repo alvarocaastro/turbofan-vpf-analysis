@@ -1,160 +1,105 @@
 """Incidence angle control for Fixed Pitch Fan (FPF) vs Variable Pitch Fan (VPF)."""
 
-from typing import Dict, Literal, Tuple
+import warnings
+from typing import Dict, Tuple
 
 import numpy as np
 
 from turbofan_vpf.aero.compressibility import apply_compressibility_to_polar
-from turbofan_vpf.aero.metrics import (
-    compute_metrics_at_alpha,
-    find_alpha_max_ld,
-    find_alpha_min_cd,
-)
+from turbofan_vpf.aero.metrics import compute_metrics_at_alpha
+from turbofan_vpf.aero.optima import find_alpha_min_cd
 from turbofan_vpf.domain.flight_phases import FlightPhase
 
 
-def alpha_fpf(
-    polar: Tuple[np.ndarray, np.ndarray, np.ndarray],
-    cruise_phase: FlightPhase,
-    target: Literal["min_cd", "max_ld"] = "max_ld",
-) -> float:
-    """Calculate fixed angle of attack for Fixed Pitch Fan (FPF).
-
-    FPF operates at a CONSTANT angle of attack, optimized for cruise conditions.
-    This angle is determined once using the cruise phase polar (with compressibility
-    correction) and then maintained across all flight phases.
-
-    The fixed angle is chosen to optimize performance at cruise (typically max L/D
-    or min CD), representing the design point where the fan is most efficient.
-
-    Args:
-        polar: Tuple of (alpha_deg, cl, cd) arrays (base/incompressible polar)
-        cruise_phase: Cruise flight phase used to determine the fixed angle
-        target: Optimization target for cruise, either "min_cd" or "max_ld"
-
-    Returns:
-        Fixed angle of attack in degrees for FPF (constant across all phases)
-    """
-    # Apply compressibility correction for cruise Mach number
-    polar_cruise = apply_compressibility_to_polar(polar, cruise_phase.mach, phase_name=cruise_phase.name)
-
-    # Find optimal angle for cruise conditions
-    if target == "min_cd":
-        return find_alpha_min_cd(polar_cruise)
-    elif target == "max_ld":
-        return find_alpha_max_ld(polar_cruise)
-    else:
-        raise ValueError(f"Invalid target: {target}. Must be 'min_cd' or 'max_ld'")
-
-
-def alpha_vpf(
-    polar: Tuple[np.ndarray, np.ndarray, np.ndarray],
-    target: Literal["min_cd", "max_ld"] = "max_ld",
-) -> float:
-    """Calculate optimal angle of attack for Variable Pitch Fan (VPF).
-
-    VPF can adjust its pitch angle to optimize performance. This function
-    returns the optimal angle based on the selected target:
-    - "min_cd": Minimize drag coefficient (best for efficiency at constant speed)
-    - "max_ld": Maximize lift-to-drag ratio (best overall efficiency)
-
-    Args:
-        polar: Tuple of (alpha_deg, cl, cd) arrays
-        target: Optimization target, either "min_cd" or "max_ld"
-
-    Returns:
-        Optimal angle of attack in degrees for VPF
-
-    Raises:
-        ValueError: If target is invalid or polar data is invalid
-    """
-    if target == "min_cd":
-        return find_alpha_min_cd(polar)
-    elif target == "max_ld":
-        return find_alpha_max_ld(polar)
-    else:
-        raise ValueError(f"Invalid target: {target}. Must be 'min_cd' or 'max_ld'")
-
-
-def compare_phase(
-    polar: Tuple[np.ndarray, np.ndarray, np.ndarray],
+def compute_phase_results(
+    polar_base: Tuple[np.ndarray, np.ndarray, np.ndarray],
     phase: FlightPhase,
-    fpf_alpha: float,
-    vpf_target: Literal["min_cd", "max_ld"] = "max_ld",
+    alpha_fpf: float,
 ) -> Dict[str, float]:
-    """Compare FPF and VPF performance for a given flight phase.
+    """Compute FPF and VPF results for a given flight phase.
 
-    Calculates aerodynamic metrics (CD, L/D) for both FPF and VPF configurations,
-    and provides comparison metrics (deltas and ratios).
-
-    FPF uses a CONSTANT angle of attack (optimized for cruise), while VPF finds
-    the optimal angle for each phase using the compressibility-corrected polar.
-
-    Applies compressibility corrections to the polar based on the phase Mach number
-    before computing metrics. The correction is applied automatically according to
-    the global configuration.
+    This function:
+    1. Applies compressibility correction to base polar for phase Mach number
+    2. Finds alpha_min_cd for this phase (VPF optimal angle)
+    3. Evaluates FPF at fixed alpha_fpf (constant across all phases)
+    4. Evaluates VPF at alpha_min_cd(phase) (optimal for this phase)
+    5. Computes all comparison metrics
 
     Args:
-        polar: Tuple of (alpha_deg, cl, cd) arrays (incompressible/base polar)
+        polar_base: Tuple of (alpha_deg, cl, cd) arrays (base/incompressible polar)
         phase: Flight phase with altitude and Mach number
-        fpf_alpha: Fixed angle of attack for FPF (constant, optimized for cruise)
-        vpf_target: VPF optimization target, either "min_cd" or "max_ld"
+        alpha_fpf: Fixed FPF angle of attack (constant, optimized for cruise)
 
     Returns:
         Dictionary with keys:
-        - 'fpf_alpha': FPF angle of attack (degrees, constant)
-        - 'vpf_alpha': VPF angle of attack (degrees, optimized for this phase)
-        - 'fpf_cd': FPF drag coefficient (compressibility corrected)
-        - 'vpf_cd': VPF drag coefficient (compressibility corrected)
-        - 'fpf_ld': FPF lift-to-drag ratio (compressibility corrected)
-        - 'vpf_ld': VPF lift-to-drag ratio (compressibility corrected)
-        - 'delta_cd': CD difference (vpf_cd - fpf_cd)
-        - 'delta_ld': L/D difference (vpf_ld - fpf_ld)
-        - 'cd_ratio': CD ratio (vpf_cd / fpf_cd)
-        - 'ld_ratio': L/D ratio (vpf_ld / fpf_ld)
-        - 'cd_reduction_pct': CD reduction percentage ((fpf_cd - vpf_cd) / fpf_cd * 100)
-        - 'ld_improvement_pct': L/D improvement percentage ((vpf_ld - fpf_ld) / fpf_ld * 100)
+        - 'phase': Phase name
+        - 'mach': Mach number
+        - 'alpha_min_cd': Optimal angle for minimum CD in this phase
+        - 'alpha_fpf': Fixed FPF angle (constant)
+        - 'delta_alpha_pitch': Pitch compensation = alpha_min_cd - alpha_fpf
+        - 'cd_at_alpha_min': CD at alpha_min_cd (VPF optimal CD)
+        - 'cd_fpf': CD at alpha_fpf (FPF CD)
+        - 'delta_cd': CD difference = cd_fpf - cd_at_alpha_min (benefit of VPF)
+        - 'ratio_cd': CD ratio = cd_fpf / cd_at_alpha_min
+        - 'cl_at_alpha_min': CL at alpha_min_cd (VPF)
+        - 'cl_fpf': CL at alpha_fpf (FPF)
+        - 'ld_at_alpha_min': L/D at alpha_min_cd (VPF)
+        - 'ld_fpf': L/D at alpha_fpf (FPF)
 
     Raises:
         ValueError: If polar data is invalid or angles are out of range
     """
-    # Apply compressibility correction for this phase's Mach number
-    polar_corrected = apply_compressibility_to_polar(polar, phase.mach, phase_name=phase.name)
+    # Step 1: Apply compressibility correction for this phase's Mach number
+    polar_corrected = apply_compressibility_to_polar(polar_base, phase.mach, phase_name=phase.name)
 
-    # FPF uses constant angle (optimized for cruise)
-    # VPF finds optimal angle for this specific phase
-    vpf_alpha = alpha_vpf(polar_corrected, target=vpf_target)
+    alpha_corr, cl_corr, cd_corr = polar_corrected
 
-    # Calculate metrics for both configurations (using corrected polar)
-    fpf_metrics = compute_metrics_at_alpha(polar_corrected, fpf_alpha)
-    vpf_metrics = compute_metrics_at_alpha(polar_corrected, vpf_alpha)
+    # Step 2: Find alpha_min_cd for this phase (VPF optimal angle)
+    alpha_min_cd = find_alpha_min_cd(polar_corrected)
 
-    fpf_cd = fpf_metrics["cd"]
-    fpf_ld = fpf_metrics["ld"]
-    vpf_cd = vpf_metrics["cd"]
-    vpf_ld = vpf_metrics["ld"]
+    # Step 3: Validate and clamp alpha_fpf if necessary
+    alpha_min = float(alpha_corr.min())
+    alpha_max = float(alpha_corr.max())
 
-    # Calculate comparison metrics
-    delta_cd = vpf_cd - fpf_cd
-    delta_ld = vpf_ld - fpf_ld
-    cd_ratio = vpf_cd / fpf_cd if fpf_cd > 0 else float("inf")
-    ld_ratio = vpf_ld / fpf_ld if fpf_ld > 0 else float("inf")
+    if alpha_fpf < alpha_min or alpha_fpf > alpha_max:
+        warnings.warn(
+            f"FPF angle {alpha_fpf:.2f}° is outside corrected polar range "
+            f"[{alpha_min:.2f}°, {alpha_max:.2f}°] for phase '{phase.name}'. "
+            f"Clamping to valid range.",
+            UserWarning,
+            stacklevel=2,
+        )
+        alpha_fpf_clamped = np.clip(alpha_fpf, alpha_min, alpha_max)
+    else:
+        alpha_fpf_clamped = alpha_fpf
 
-    # Calculate percentages
-    cd_reduction_pct = ((fpf_cd - vpf_cd) / fpf_cd * 100) if fpf_cd > 0 else 0.0
-    ld_improvement_pct = ((vpf_ld - fpf_ld) / fpf_ld * 100) if fpf_ld > 0 else 0.0
+    # Step 4: Evaluate metrics at both angles
+    # VPF: at alpha_min_cd (optimal for this phase)
+    vpf_metrics = compute_metrics_at_alpha(polar_corrected, alpha_min_cd)
+
+    # FPF: at fixed alpha_fpf (constant)
+    fpf_metrics = compute_metrics_at_alpha(polar_corrected, alpha_fpf_clamped)
+
+    # Step 5: Compute comparison metrics
+    cd_at_alpha_min = vpf_metrics["cd"]
+    cd_fpf = fpf_metrics["cd"]
+    delta_cd = cd_fpf - cd_at_alpha_min  # Positive = VPF benefit
+    ratio_cd = cd_fpf / cd_at_alpha_min if cd_at_alpha_min > 0 else float("inf")
+
+    delta_alpha_pitch = alpha_min_cd - alpha_fpf
 
     return {
-        "fpf_alpha": fpf_alpha,
-        "vpf_alpha": vpf_alpha,
-        "fpf_cd": fpf_cd,
-        "vpf_cd": vpf_cd,
-        "fpf_ld": fpf_ld,
-        "vpf_ld": vpf_ld,
+        "phase": phase.name,
+        "mach": phase.mach,
+        "alpha_min_cd": alpha_min_cd,
+        "alpha_fpf": alpha_fpf,
+        "delta_alpha_pitch": delta_alpha_pitch,
+        "cd_at_alpha_min": cd_at_alpha_min,
+        "cd_fpf": cd_fpf,
         "delta_cd": delta_cd,
-        "delta_ld": delta_ld,
-        "cd_ratio": cd_ratio,
-        "ld_ratio": ld_ratio,
-        "cd_reduction_pct": cd_reduction_pct,
-        "ld_improvement_pct": ld_improvement_pct,
+        "ratio_cd": ratio_cd,
+        "cl_at_alpha_min": vpf_metrics["cl"],
+        "cl_fpf": fpf_metrics["cl"],
+        "ld_at_alpha_min": vpf_metrics["ld"],
+        "ld_fpf": fpf_metrics["ld"],
     }
