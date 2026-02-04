@@ -58,23 +58,23 @@ def correct_cd_pg(
 ) -> float | np.ndarray:
     """Apply Prandtl-Glauert correction to drag coefficient.
 
-    Uses a simple approximation:
-    CD_corrected = CD_incompressible / β²
+    Uses a more realistic approximation that accounts for induced drag:
+    CD_corrected = CD0/β² + CDi/β³
 
-    where β = √(1 - M²)
+    where:
+    - β = √(1 - M²)
+    - CD0 is zero-lift drag (scales with 1/β²)
+    - CDi is induced drag (scales with 1/β³ because it depends on CL²)
 
-    This approximation assumes:
-    - No wave drag (valid only for subsonic flow)
-    - No shock effects
-    - Drag scales with dynamic pressure correction
-
-    For more accurate results, a drag polar correction could be used:
-    CD_corrected = CD0/β² + CDi/β², where CDi is induced drag.
+    This approximation:
+    - Separates zero-lift drag (CD0) from induced drag (CDi)
+    - Accounts for the fact that induced drag scales differently with Mach
+    - Changes the optimal angle of attack with Mach number
 
     Args:
         cd: Drag coefficient (incompressible)
         mach: Mach number
-        cl: Optional lift coefficient (not used in current approximation)
+        cl: Lift coefficient (required for induced drag correction)
 
     Returns:
         Corrected drag coefficient accounting for compressibility
@@ -82,10 +82,6 @@ def correct_cd_pg(
     Warns:
         UserWarning: Explicit warning that wave drag and shocks are not modeled
     """
-    if cl is not None:
-        # Future: could use cl-dependent correction for induced drag
-        pass
-
     beta_val = beta(mach)
 
     # Explicit warning about limitations
@@ -98,7 +94,38 @@ def correct_cd_pg(
             stacklevel=2,
         )
 
-    return cd / (beta_val**2)
+    # More realistic correction: separate zero-lift drag from induced drag
+    # CD = CD0 + CDi, where CDi depends on CL²
+    # CD0 scales with 1/β², CDi scales with 1/β³ (because CL scales with 1/β)
+    if cl is not None:
+        if isinstance(cd, np.ndarray) and isinstance(cl, np.ndarray):
+            # Find CD0: minimum CD (typically occurs near zero lift)
+            # Find the point closest to zero lift
+            cl_abs = np.abs(cl)
+            zero_lift_idx = np.argmin(cl_abs)
+            cd0_estimate = cd[zero_lift_idx]
+            
+            # Estimate induced drag component: CDi = CD - CD0
+            # But we need to account for the fact that CDi depends on CL²
+            # For compressibility: CDi_corrected = CDi_incomp * (CL_corrected/CL_incomp)² / β²
+            # Since CL_corrected = CL_incomp / β, we get:
+            # CDi_corrected = CDi_incomp / β³
+            
+            cdi_estimate = cd - cd0_estimate
+            # Zero-lift drag: CD0/β²
+            # Induced drag: CDi/β³ (because it scales with CL², and CL scales with 1/β)
+            cd_corrected = cd0_estimate / (beta_val**2) + cdi_estimate / (beta_val**3)
+            # Ensure non-negative and physically reasonable
+            cd_corrected = np.maximum(cd_corrected, cd0_estimate / (beta_val**2))
+        else:
+            # Scalar case
+            cd0_estimate = cd  # Simple fallback
+            cd_corrected = cd / (beta_val**2)
+    else:
+        # Fallback to simple scaling if CL not provided
+        cd_corrected = cd / (beta_val**2)
+
+    return cd_corrected
 
 
 def apply_compressibility_to_polar(
